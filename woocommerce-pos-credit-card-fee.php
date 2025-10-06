@@ -4,7 +4,7 @@
  * Plugin Name: WooCommerce POS Credit Card Fee
  * Plugin URI: https://wcpos.com/
  * Description: Adds credit card fee management buttons to a WooCommerce payment gateway
- * Version: 0.0.1
+ * Version: 0.0.2
  * Author: kilbot
  * License: GPL v2 or later
  * Text Domain: wcpos-ccf
@@ -21,6 +21,7 @@ if (! defined('ABSPATH')) {
 define('WCPOS\WooCommercePOS\CreditCardFee\PLUGIN_URL', plugin_dir_url(__FILE__));
 define('WCPOS\WooCommercePOS\CreditCardFee\PLUGIN_PATH', plugin_dir_path(__FILE__));
 define('WCPOS\WooCommercePOS\CreditCardFee\FEE_PERCENTAGE', 3); // 3% fee
+define('WCPOS\WooCommercePOS\CreditCardFee\GATEWAY_ID', 'stripe_terminal_for_woocommerce');
 
 /**
  * Main plugin class
@@ -68,9 +69,9 @@ class Manager
         if (!$this->is_pos_order_pay_page()) {
             return $description;
         }
-        
+
         // Only add buttons to the required gateway
-        if ($gateway_id !== 'bacs') {
+        if ($gateway_id !== GATEWAY_ID) {
             return $description;
         }
 
@@ -106,7 +107,7 @@ class Manager
         if (!is_wc_endpoint_url('order-pay')) {
             return false;
         }
-        
+
         // Check if URL contains /wcpos-checkout/
         $request_uri = $_SERVER['REQUEST_URI'] ?? '';
         return strpos($request_uri, '/wcpos-checkout/') !== false;

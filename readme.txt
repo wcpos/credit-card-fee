@@ -4,7 +4,7 @@ Tags: woocommerce, payment, fees, pos, credit card
 Requires at least: 5.0
 Tested up to: 6.4
 Requires PHP: 7.2
-Stable tag: 0.0.1
+Stable tag: 0.0.2
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -39,6 +39,9 @@ To change the fee percentage, edit the following line in the main plugin file:
 `define( 'WCPOS_CCF_FEE_PERCENTAGE', 3 );`
 
 == Changelog ==
+
+= 0.0.2 =
+* Add GATEWAY_ID variable, default to 'stripe_terminal_for_woocommerce'
 
 = 0.0.1 =
 * Initial release
