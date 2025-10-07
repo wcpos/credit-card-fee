@@ -11,13 +11,32 @@ jQuery(document).ready(function($) {
     var $checkoutForm = $('form.checkout');
     
     // Restore selected payment method after reload
+    // Use a slight delay to ensure WooCommerce payment scripts have initialized
     var savedPayment = sessionStorage.getItem('wcpos_selected_payment');
     if (savedPayment) {
-        var $savedRadio = $('input[name="payment_method"][value="' + savedPayment + '"]');
-        if ($savedRadio.length) {
-            $savedRadio.prop('checked', true).trigger('change');
-        }
-        sessionStorage.removeItem('wcpos_selected_payment');
+        setTimeout(function() {
+            var $savedRadio = $('input[name="payment_method"][value="' + savedPayment + '"]');
+            if ($savedRadio.length) {
+                // Check the radio button
+                $savedRadio.prop('checked', true);
+                
+                // Hide all payment boxes first
+                $('.payment_box').hide();
+                
+                // Show the selected payment method's box
+                var $paymentBox = $('.payment_box.payment_method_' + savedPayment);
+                if ($paymentBox.length) {
+                    $paymentBox.show();
+                } else {
+                    // Fallback: find parent li and show its payment_box
+                    $savedRadio.closest('li').find('.payment_box').show();
+                }
+                
+                // Trigger change event for any other listeners
+                $savedRadio.trigger('change');
+            }
+            sessionStorage.removeItem('wcpos_selected_payment');
+        }, 150);
     }
     
     /**
@@ -94,34 +113,38 @@ jQuery(document).ready(function($) {
             },
             success: function(response) {
                 if (response.success) {
-                    // Show success message
-                    if (response.data && response.data.message) {
-                        showNotice(response.data.message, 'success');
-                    }
-                    
                     // If reload flag is set, reload the page
                     if (response.data && response.data.reload) {
+                        // Update button to show reloading state
+                        $button.text('Reloading page...').css('opacity', '0.7');
+                        
                         // Store selected payment method before reload
                         var selectedPayment = $('input[name="payment_method"]:checked').val();
                         if (selectedPayment) {
                             sessionStorage.setItem('wcpos_selected_payment', selectedPayment);
                         }
                         
+                        // Reload immediately
                         setTimeout(function() {
                             window.location.reload();
-                        }, 1000);
+                        }, 500);
                     } else {
                         // Otherwise update UI without reload
                         $button.hide();
                         $removeButton.show();
                         
-                        // Update status text
                         if ($status.length) {
                             $status.html(wcpos_ccf.fee_percentage + '% fee applied');
                         }
                         
-                        // Force checkout refresh
+                        if (response.data && response.data.message) {
+                            showNotice(response.data.message, 'success');
+                        }
+                        
                         forceCheckoutRefresh();
+                        
+                        // Re-enable button
+                        $button.prop('disabled', false).text('Add credit card fee');
                     }
                 } else {
                     // Handle error response
@@ -130,6 +153,9 @@ jQuery(document).ready(function($) {
                         errorMsg = response.data.message;
                     }
                     showNotice(errorMsg, 'error');
+                    
+                    // Re-enable button on error
+                    $button.prop('disabled', false).text('Add credit card fee');
                 }
             },
             error: function(xhr) {
@@ -138,9 +164,8 @@ jQuery(document).ready(function($) {
                     message = xhr.responseJSON.data.message;
                 }
                 showNotice(message, 'error');
-            },
-            complete: function() {
-                // Re-enable button and restore text
+                
+                // Re-enable button on error
                 $button.prop('disabled', false).text('Add credit card fee');
             }
         });
@@ -182,34 +207,38 @@ jQuery(document).ready(function($) {
             },
             success: function(response) {
                 if (response.success) {
-                    // Show success message
-                    if (response.data && response.data.message) {
-                        showNotice(response.data.message, 'success');
-                    }
-                    
                     // If reload flag is set, reload the page
                     if (response.data && response.data.reload) {
+                        // Update button to show reloading state
+                        $button.text('Reloading page...').css('opacity', '0.7');
+                        
                         // Store selected payment method before reload
                         var selectedPayment = $('input[name="payment_method"]:checked').val();
                         if (selectedPayment) {
                             sessionStorage.setItem('wcpos_selected_payment', selectedPayment);
                         }
                         
+                        // Reload immediately
                         setTimeout(function() {
                             window.location.reload();
-                        }, 1000);
+                        }, 500);
                     } else {
                         // Otherwise update UI without reload
                         $button.hide();
                         $addButton.show();
                         
-                        // Clear status text
                         if ($status.length) {
                             $status.html('');
                         }
                         
-                        // Force checkout refresh
+                        if (response.data && response.data.message) {
+                            showNotice(response.data.message, 'success');
+                        }
+                        
                         forceCheckoutRefresh();
+                        
+                        // Re-enable button
+                        $button.prop('disabled', false).text('Remove credit card fee');
                     }
                 } else {
                     // Handle error response
@@ -218,6 +247,9 @@ jQuery(document).ready(function($) {
                         errorMsg = response.data.message;
                     }
                     showNotice(errorMsg, 'error');
+                    
+                    // Re-enable button on error
+                    $button.prop('disabled', false).text('Remove credit card fee');
                 }
             },
             error: function(xhr) {
@@ -226,9 +258,8 @@ jQuery(document).ready(function($) {
                     message = xhr.responseJSON.data.message;
                 }
                 showNotice(message, 'error');
-            },
-            complete: function() {
-                // Re-enable button and restore text
+                
+                // Re-enable button on error
                 $button.prop('disabled', false).text('Remove credit card fee');
             }
         });
