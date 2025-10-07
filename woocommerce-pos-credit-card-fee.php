@@ -4,7 +4,7 @@
  * Plugin Name: WooCommerce POS Credit Card Fee
  * Plugin URI: https://wcpos.com/
  * Description: Adds credit card fee management buttons to a WooCommerce payment gateway
- * Version: 0.0.3
+ * Version: 0.0.4
  * Author: kilbot
  * License: GPL v2 or later
  * Text Domain: wcpos-ccf
@@ -22,7 +22,7 @@ define('WCPOS\WooCommercePOS\CreditCardFee\PLUGIN_URL', plugin_dir_url(__FILE__)
 define('WCPOS\WooCommercePOS\CreditCardFee\PLUGIN_PATH', plugin_dir_path(__FILE__));
 define('WCPOS\WooCommercePOS\CreditCardFee\FEE_PERCENTAGE', 3); // 3% fee
 define('WCPOS\WooCommercePOS\CreditCardFee\GATEWAY_ID', 'stripe_terminal_for_woocommerce');
-define('WCPOS\WooCommercePOS\CreditCardFee\PLUGIN_VERSION', '0.0.3');
+define('WCPOS\WooCommercePOS\CreditCardFee\PLUGIN_VERSION', '0.0.4');
 
 /**
  * Main plugin class
@@ -80,18 +80,18 @@ class Manager
 
         // Build the buttons HTML with inline styles
         $buttons_html = '<div class="wcpos-ccf-buttons" style="margin-top:15px;padding:15px;background:#f7f7f7;border-radius:4px;border:1px solid #e0e0e0;">';
-        
+
         // Add fee button
         $add_display = $has_fee ? 'display:none;' : '';
         $add_disabled = $has_fee ? ' disabled' : '';
-        $buttons_html .= '<button type="button" class="button wcpos-add-cc-fee-btn"' . $add_disabled . ' style="' . $add_display . 'background:#2271b1;color:#fff;border:none;padding:10px 20px;font-size:14px;font-weight:500;border-radius:4px;cursor:pointer;transition:all 0.2s ease;">';
+        $buttons_html .= '<button type="button" class="button wcpos-add-cc-fee-btn"' . $add_disabled . ' style="' . $add_display . 'background:#2271b1;color:#fff;border:none;padding:10px 20px;font-size:14px;font-weight:500;line-height:1.2;border-radius:4px;cursor:pointer;transition:all 0.2s ease;">';
         $buttons_html .= esc_html__('Add credit card fee', 'wcpos-ccf');
         $buttons_html .= '</button>';
-        
+
         // Remove fee button
         $remove_display = !$has_fee ? 'display:none;' : '';
         $remove_disabled = !$has_fee ? ' disabled' : '';
-        $buttons_html .= '<button type="button" class="button wcpos-remove-cc-fee-btn"' . $remove_disabled . ' style="' . $remove_display . 'background:#dc3232;color:#fff;border:none;padding:10px 20px;font-size:14px;font-weight:500;border-radius:4px;cursor:pointer;transition:all 0.2s ease;margin-left:10px;">';
+        $buttons_html .= '<button type="button" class="button wcpos-remove-cc-fee-btn"' . $remove_disabled . ' style="' . $remove_display . 'background:#dc3232;color:#fff;border:none;padding:10px 20px;font-size:14px;font-weight:500;line-height:1.2;border-radius:4px;cursor:pointer;transition:all 0.2s ease;margin-left:10px;">';
         $buttons_html .= esc_html__('Remove credit card fee', 'wcpos-ccf');
         $buttons_html .= '</button>';
 
@@ -241,9 +241,9 @@ class Manager
             return;
         }
 
-        // Calculate fee amount (3% of order total)
-        $subtotal = $order->get_subtotal();
-        $fee_amount = $subtotal * (FEE_PERCENTAGE / 100);
+        // Calculate fee amount (3% of order total including tax)
+        $total = $order->get_total();
+        $fee_amount = $total * (FEE_PERCENTAGE / 100);
 
         if ($fee_amount <= 0) {
             wp_send_json_error(array('message' => 'Invalid fee amount.'));
@@ -262,7 +262,7 @@ class Manager
         $fee->set_name(sprintf(__('Credit Card Fee (%d%%)', 'wcpos-ccf'), FEE_PERCENTAGE));
         $fee->set_amount($fee_amount);
         $fee->set_tax_class('');
-        $fee->set_tax_status('taxable');
+        $fee->set_tax_status('none');
         $fee->set_total($fee_amount);
 
         // Add fee to order
