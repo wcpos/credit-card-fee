@@ -201,7 +201,8 @@ class Manager
 
     public function reconcile_card_fee($order)
     {
-        if (!$this->is_pos_order_pay_page()) {
+        // The order is supplied; only the POS checkout path matters here, not the endpoint query var.
+        if (strpos($_SERVER['REQUEST_URI'] ?? '', '/wcpos-checkout/') === false) {
             return;
         }
         $rule = $this->get_card_rule();

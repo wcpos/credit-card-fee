@@ -78,7 +78,8 @@ jQuery(document).ready(function($) {
         });
     }
 
-    $checkoutForm.on('change', 'input[name="payment_method"]', syncCardFee);
+    // The pay page form is #order_review, so delegate from body rather than form.checkout.
+    $(document.body).on('change', 'input[name="payment_method"]', syncCardFee);
     if (!savedPayment) {
         syncCardFee();
     }
