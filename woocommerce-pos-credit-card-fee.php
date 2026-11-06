@@ -181,11 +181,10 @@ class Manager
     private function remove_fee($order, $rule_id)
     {
         $removed = false;
-        foreach ($order->get_fees() as $id => $fee) {
-            if ($fee->get_meta('_wcpos_ccf_rule') === $rule_id) {
-                $order->remove_item($id);
-                $removed = true;
-            }
+        // Same finder as upsert, so an adopted 0.0.4 line is removed too.
+        while ($fee = $this->find_fee($order, $rule_id)) {
+            $order->remove_item($fee->get_id());
+            $removed = true;
         }
         return $removed;
     }
