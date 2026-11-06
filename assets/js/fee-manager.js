@@ -50,6 +50,7 @@ jQuery(document).ready(function($) {
         }
         var pathMatch = window.location.pathname.match(/order-pay\/(\d+)/);
         inFlight = true;
+        $('#place_order').prop('disabled', true);
         $.ajax({
             url: wcpos_ccf.ajax_url,
             type: 'POST',
@@ -68,11 +69,13 @@ jQuery(document).ready(function($) {
                     window.location.reload();
                 } else {
                     inFlight = false;
+                    $('#place_order').prop('disabled', false);
                     showNotice(response.data && response.data.message || 'Fee could not be updated.', 'error');
                 }
             },
             error: function() {
                 inFlight = false;
+                $('#place_order').prop('disabled', false);
                 showNotice('Error updating fee. Please refresh the page and try again.', 'error');
             }
         });

@@ -59,6 +59,7 @@ class Manager
             return $keys;
         });
         add_action('woocommerce_rest_insert_shop_order_object', array($this, 'apply_always_fee'), 10, 3);
+        add_action('woocommerce_order_after_calculate_totals', array($this, 'recompute_always_fee'), 10, 2);
         add_action('woocommerce_before_pay_action', array($this, 'reconcile_card_fee'));
     }
 
@@ -137,6 +138,14 @@ class Manager
                 return $fee;
             }
         }
+        // A card fee written by 0.0.4 carries no meta; adopt it rather than add a second one.
+        if ($rule_id === 'card') {
+            foreach ($order->get_fees() as $fee) {
+                if (!$fee->get_meta('_wcpos_ccf_rule') && strpos($fee->get_name(), 'Credit Card Fee') === 0) {
+                    return $fee;
+                }
+            }
+        }
         return false;
     }
 
@@ -152,6 +161,8 @@ class Manager
         $new = !$fee;
         if ($new) {
             $fee = new \WC_Order_Item_Fee();
+        }
+        if (!$fee->get_meta('_wcpos_ccf_rule')) {
             $fee->add_meta_data('_wcpos_ccf_rule', $rule['id'], true);
         }
         $fee->set_name($rule['name']);
@@ -181,21 +192,36 @@ class Manager
 
     public function apply_always_fee($order, $request, $creating)
     {
-        static $saving = false;
         $rule = $this->get_always_rule();
-        if ($saving || $order->get_created_via() !== 'woocommerce-pos' || $rule['percent'] <= 0) {
+        if (!$creating || $order->get_created_via() !== 'woocommerce-pos' || $rule['percent'] <= 0) {
+            return; // Updates are covered by recompute_always_fee; a removed line stays off.
+        }
+        $this->upsert_fee($order, $rule);
+        $order->calculate_totals();
+        $order->save();
+    }
+
+    /**
+     * Keep an existing always fee in step with the line items on every totals
+     * recalculation: REST updates, pay-page coupons, admin edits.
+     */
+    public function recompute_always_fee($and_taxes, $order)
+    {
+        static $busy = false;
+        if ($busy || !$order instanceof \WC_Order || $order->get_created_via() !== 'woocommerce-pos') {
             return;
         }
-        if (!$creating && !$this->find_fee($order, 'always')) {
-            return; // Cashier removed this fee for this order.
+        $rule = $this->get_always_rule();
+        if ($rule['percent'] <= 0 || !$this->find_fee($order, 'always')) {
+            return;
         }
-        $saving = true;
+        $busy = true;
         try {
-            $this->upsert_fee($order, $rule);
-            $order->calculate_totals();
-            $order->save();
+            if ($this->upsert_fee($order, $rule)) {
+                $order->calculate_totals($and_taxes);
+            }
         } finally {
-            $saving = false;
+            $busy = false;
         }
     }
 
@@ -364,6 +390,10 @@ class Manager
             wp_send_json_error(array('message' => 'Order not found.'));
             return;
         }
+        if (!$order->needs_payment()) {
+            wp_send_json_error(array('message' => __('This order no longer needs payment.', 'wcpos-ccf')));
+            return;
+        }
 
         $rule = $this->get_card_rule();
         $payment_method = wc_clean(wp_unslash($_POST['payment_method'] ?? ''));
@@ -411,6 +441,10 @@ class Manager
         $order = wc_get_order($order_id);
         if (!$order) {
             wp_send_json_error(array('message' => 'Order not found.'));
+            return;
+        }
+        if (!$order->needs_payment()) {
+            wp_send_json_error(array('message' => __('This order no longer needs payment.', 'wcpos-ccf')));
             return;
         }
 
