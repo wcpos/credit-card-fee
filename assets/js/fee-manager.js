@@ -58,6 +58,7 @@ jQuery(document).ready(function($) {
                 action: wanted ? 'wcpos_add_credit_card_fee' : 'wcpos_remove_credit_card_fee',
                 security_token: wcpos_ccf.security_token,
                 order_id: pathMatch ? pathMatch[1] : '',
+                order_key: new URLSearchParams(window.location.search).get('key') || '',
                 payment_method: payment
             },
             success: function(response) {

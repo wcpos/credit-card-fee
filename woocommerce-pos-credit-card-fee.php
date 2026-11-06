@@ -208,8 +208,8 @@ class Manager
     public function recompute_fees($and_taxes, $order)
     {
         static $busy = false;
-        if ($busy || !$order instanceof \WC_Order || $order->get_created_via() !== 'woocommerce-pos') {
-            return;
+        if ($busy || !$order instanceof \WC_Order || $order->get_created_via() !== 'woocommerce-pos' || $order->is_paid()) {
+            return; // A paid order keeps the fee the customer paid.
         }
         $busy = true;
         try {
@@ -392,6 +392,11 @@ class Manager
             wp_send_json_error(array('message' => 'Order not found.'));
             return;
         }
+        $order_key = wc_clean(wp_unslash($_POST['order_key'] ?? ''));
+        if (!is_string($order_key) || $order_key === '' || !hash_equals($order->get_order_key(), $order_key)) {
+            wp_send_json_error(array('message' => 'Order not found.'));
+            return;
+        }
         if (!$order->needs_payment()) {
             wp_send_json_error(array('message' => __('This order no longer needs payment.', 'wcpos-ccf')));
             return;
@@ -442,6 +447,11 @@ class Manager
 
         $order = wc_get_order($order_id);
         if (!$order) {
+            wp_send_json_error(array('message' => 'Order not found.'));
+            return;
+        }
+        $order_key = wc_clean(wp_unslash($_POST['order_key'] ?? ''));
+        if (!is_string($order_key) || $order_key === '' || !hash_equals($order->get_order_key(), $order_key)) {
             wp_send_json_error(array('message' => 'Order not found.'));
             return;
         }
