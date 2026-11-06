@@ -3,8 +3,8 @@
 /**
  * Plugin Name: WooCommerce POS Credit Card Fee
  * Plugin URI: https://wcpos.com/
- * Description: Adds credit card fee management buttons to a WooCommerce payment gateway
- * Version: 0.0.4
+ * Description: Configurable always and automatic card fees for WooCommerce POS
+ * Version: 0.1.0
  * Author: kilbot
  * License: GPL v2 or later
  * Text Domain: wcpos-ccf
@@ -20,9 +20,7 @@ if (! defined('ABSPATH')) {
 // Define plugin constants
 define('WCPOS\WooCommercePOS\CreditCardFee\PLUGIN_URL', plugin_dir_url(__FILE__));
 define('WCPOS\WooCommercePOS\CreditCardFee\PLUGIN_PATH', plugin_dir_path(__FILE__));
-define('WCPOS\WooCommercePOS\CreditCardFee\FEE_PERCENTAGE', 3); // 3% fee
-define('WCPOS\WooCommercePOS\CreditCardFee\GATEWAY_ID', 'stripe_terminal_for_woocommerce');
-define('WCPOS\WooCommercePOS\CreditCardFee\PLUGIN_VERSION', '0.0.4');
+define('WCPOS\WooCommercePOS\CreditCardFee\PLUGIN_VERSION', '0.1.0');
 
 /**
  * Main plugin class
@@ -42,8 +40,8 @@ class Manager
      */
     public function init()
     {
-        // Add buttons to pos_cash payment fields via gateway description
-        add_filter('woocommerce_gateway_description', array($this, 'add_fee_buttons_to_description'), 10, 2);
+        // Show the card fee status in configured gateway descriptions
+        add_filter('woocommerce_gateway_description', array($this, 'card_fee_status_in_description'), 10, 2);
 
         // Enqueue scripts
         add_action('wp_enqueue_scripts', array($this, 'enqueue_scripts'));
@@ -54,58 +52,209 @@ class Manager
         add_action('wp_ajax_wcpos_remove_credit_card_fee', array($this, 'ajax_remove_fee'));
         add_action('wp_ajax_nopriv_wcpos_remove_credit_card_fee', array($this, 'ajax_remove_fee'));
 
-        // Add fee to cart if session flag is set (for checkout page)
-        add_action('woocommerce_cart_calculate_fees', array($this, 'add_credit_card_fee'));
+        add_filter('woocommerce_get_sections_advanced', array($this, 'settings_section'));
+        add_filter('woocommerce_get_settings_advanced', array($this, 'settings_fields'), 10, 2);
+        add_filter('woocommerce_hidden_order_itemmeta', function ($keys) {
+            $keys[] = '_wcpos_ccf_rule';
+            return $keys;
+        });
+        add_action('woocommerce_rest_insert_shop_order_object', array($this, 'apply_always_fee'), 10, 3);
+        add_action('woocommerce_order_after_calculate_totals', array($this, 'recompute_fees'), 10, 2);
+        add_action('woocommerce_before_pay_action', array($this, 'reconcile_card_fee'));
+    }
 
-        // Handle fee for order-pay page
-        add_action('before_woocommerce_pay', array($this, 'add_fee_to_order_pay'));
+    public function settings_section($sections)
+    {
+        $sections['wcpos_fees'] = __('POS fees', 'wcpos-ccf');
+        return $sections;
+    }
+
+    public function settings_fields($settings, $section)
+    {
+        if ($section !== 'wcpos_fees') {
+            return $settings;
+        }
+        $gateways = array();
+        foreach (\WC()->payment_gateways()->payment_gateways() as $id => $gateway) {
+            $gateways[$id] = $gateway->get_title();
+        }
+        $settings = array(array('title' => __('POS fees', 'wcpos-ccf'), 'type' => 'title', 'id' => 'wcpos_fees'));
+        foreach (array('always' => __('Always fee', 'wcpos-ccf'), 'card' => __('Card fee', 'wcpos-ccf')) as $id => $label) {
+            $settings[] = array(
+                'title' => $label . ' ' . __('name', 'wcpos-ccf'), 'type' => 'text', 'id' => 'wcpos_ccf_' . $id . '_name',
+                'default' => $id === 'always' ? __('Service fee', 'wcpos-ccf') : __('Card fee', 'wcpos-ccf'),
+            );
+            $settings[] = array(
+                'title' => $label . ' (%)', 'type' => 'number', 'id' => 'wcpos_ccf_' . $id . '_percent',
+                'default' => $id === 'always' ? '' : 3, 'custom_attributes' => array('step' => '0.01', 'min' => '0'),
+                'desc' => __('Blank or 0 disables this fee.', 'wcpos-ccf'),
+            );
+        }
+        $settings[] = array(
+            'title' => __('Card fee gateways', 'wcpos-ccf'), 'type' => 'multiselect', 'id' => 'wcpos_ccf_card_gateways',
+            'options' => $gateways, 'default' => array('stripe_terminal_for_woocommerce'), 'class' => 'wc-enhanced-select',
+        );
+        $settings[] = array(
+            'title' => __('Fee tax status', 'wcpos-ccf'), 'type' => 'select', 'id' => 'wcpos_ccf_tax_status', 'default' => 'none',
+            'options' => array('taxable' => __('Taxable, standard class', 'wcpos-ccf'), 'none' => __('Not taxable', 'wcpos-ccf')),
+        );
+        $settings[] = array('type' => 'sectionend', 'id' => 'wcpos_fees');
+        return $settings;
+    }
+
+    private function get_always_rule()
+    {
+        return array(
+            'id' => 'always', 'name' => (string) get_option('wcpos_ccf_always_name', __('Service fee', 'wcpos-ccf')),
+            'percent' => max(0.0, (float) get_option('wcpos_ccf_always_percent', '')),
+            'tax_status' => get_option('wcpos_ccf_tax_status', 'none') === 'taxable' ? 'taxable' : 'none',
+            'gateways' => array(),
+        );
+    }
+
+    private function get_card_rule()
+    {
+        return array(
+            'id' => 'card', 'name' => (string) get_option('wcpos_ccf_card_name', __('Card fee', 'wcpos-ccf')),
+            'percent' => max(0.0, (float) get_option('wcpos_ccf_card_percent', 3)),
+            'tax_status' => get_option('wcpos_ccf_tax_status', 'none') === 'taxable' ? 'taxable' : 'none',
+            'gateways' => array_values((array) get_option('wcpos_ccf_card_gateways', array('stripe_terminal_for_woocommerce'))),
+        );
+    }
+
+    private function fee_amount_for($order, $rule)
+    {
+        $basis = 0;
+        foreach ($order->get_items('line_item') as $item) {
+            $basis += (float) $item->get_total();
+        }
+        return wc_format_decimal($basis * $rule['percent'] / 100, wc_get_price_decimals());
+    }
+
+    private function find_fee($order, $rule_id)
+    {
+        foreach ($order->get_fees() as $fee) {
+            if ($fee->get_meta('_wcpos_ccf_rule') === $rule_id) {
+                return $fee;
+            }
+        }
+        // A card fee written by 0.0.4 carries no meta; adopt it rather than add a second one.
+        if ($rule_id === 'card') {
+            foreach ($order->get_fees() as $fee) {
+                if (!$fee->get_meta('_wcpos_ccf_rule') && strpos($fee->get_name(), 'Credit Card Fee') === 0) {
+                    return $fee;
+                }
+            }
+        }
+        return false;
+    }
+
+    private function upsert_fee($order, $rule)
+    {
+        $fee = $this->find_fee($order, $rule['id']);
+        $amount = $this->fee_amount_for($order, $rule);
+        if ($fee && $fee->get_name() === $rule['name'] && (float) $fee->get_total() === (float) $amount
+            && (float) $fee->get_amount() === (float) $amount && $fee->get_tax_status() === $rule['tax_status']
+            && ($rule['tax_status'] !== 'taxable' || $fee->get_tax_class() === '')) {
+            return false;
+        }
+        $new = !$fee;
+        if ($new) {
+            $fee = new \WC_Order_Item_Fee();
+        }
+        if (!$fee->get_meta('_wcpos_ccf_rule')) {
+            $fee->add_meta_data('_wcpos_ccf_rule', $rule['id'], true);
+        }
+        $fee->set_name($rule['name']);
+        $fee->set_amount($amount);
+        $fee->set_total($amount);
+        $fee->set_tax_status($rule['tax_status']);
+        if ($rule['tax_status'] === 'taxable') {
+            $fee->set_tax_class('');
+        }
+        if ($new) {
+            $order->add_item($fee);
+        }
+        return true;
+    }
+
+    private function remove_fee($order, $rule_id)
+    {
+        $removed = false;
+        // Same finder as upsert, so an adopted 0.0.4 line is removed too.
+        while ($fee = $this->find_fee($order, $rule_id)) {
+            $order->remove_item($fee->get_id());
+            $removed = true;
+        }
+        return $removed;
+    }
+
+    public function apply_always_fee($order, $request, $creating)
+    {
+        $rule = $this->get_always_rule();
+        if (!$creating || $order->get_created_via() !== 'woocommerce-pos' || $rule['percent'] <= 0) {
+            return; // Updates are covered by recompute_always_fee; a removed line stays off.
+        }
+        $this->upsert_fee($order, $rule);
+        $order->calculate_totals();
+        $order->save();
     }
 
     /**
-     * Add fee management buttons to pos_cash payment fields via gateway description
+     * Keep existing fee lines in step with the line items on every totals
+     * recalculation: REST updates, pay-page coupons, admin edits. Whether a
+     * line exists is decided elsewhere (create, the pay-page gateway, the cashier).
      */
-    public function add_fee_buttons_to_description($description, $gateway_id)
+    public function recompute_fees($and_taxes, $order)
     {
-        // Only add buttons on POS checkout pages
-        if (!$this->is_pos_order_pay_page()) {
+        static $busy = false;
+        if ($busy || !$order instanceof \WC_Order || $order->get_created_via() !== 'woocommerce-pos' || $order->is_paid()) {
+            return; // A paid order keeps the fee the customer paid.
+        }
+        $busy = true;
+        try {
+            $changed = false;
+            foreach (array($this->get_always_rule(), $this->get_card_rule()) as $rule) {
+                if ($rule['percent'] > 0 && $this->find_fee($order, $rule['id']) && $this->upsert_fee($order, $rule)) {
+                    $changed = true;
+                }
+            }
+            if ($changed) {
+                $order->calculate_totals($and_taxes);
+            }
+        } finally {
+            $busy = false;
+        }
+    }
+
+    public function reconcile_card_fee($order)
+    {
+        // The order is supplied; only the POS checkout path matters here, not the endpoint query var.
+        if (strpos($_SERVER['REQUEST_URI'] ?? '', '/wcpos-checkout/') === false) {
+            return;
+        }
+        $rule = $this->get_card_rule();
+        $payment_method = wc_clean(wp_unslash($_POST['payment_method'] ?? ''));
+        $wanted = $rule['percent'] > 0 && in_array($payment_method, $rule['gateways'], true);
+        $changed = $wanted ? $this->upsert_fee($order, $rule) : $this->remove_fee($order, 'card');
+        if ($changed) {
+            $order->calculate_totals();
+            $order->save();
+        }
+    }
+
+    public function card_fee_status_in_description($description, $gateway_id)
+    {
+        $rule = $this->get_card_rule();
+        if (!$this->is_pos_order_pay_page() || !in_array($gateway_id, $rule['gateways'], true)) {
             return $description;
         }
-
-        // Only add buttons to the required gateway
-        if ($gateway_id !== GATEWAY_ID) {
+        $order = wc_get_order(absint(get_query_var('order-pay')));
+        if (!$order || !$this->find_fee($order, 'card')) {
             return $description;
         }
-
-        $has_fee = \WC()->session->get('wcpos_add_credit_card_fee');
-
-        // Build the buttons HTML with inline styles
-        $buttons_html = '<div class="wcpos-ccf-buttons" style="margin-top:15px;padding:15px;background:#f7f7f7;border-radius:4px;border:1px solid #e0e0e0;">';
-
-        // Add fee button
-        $add_display = $has_fee ? 'display:none;' : '';
-        $add_disabled = $has_fee ? ' disabled' : '';
-        $buttons_html .= '<button type="button" class="button wcpos-add-cc-fee-btn"' . $add_disabled . ' style="' . $add_display . 'background:#2271b1;color:#fff;border:none;padding:10px 20px;font-size:14px;font-weight:500;line-height:1.2;border-radius:4px;cursor:pointer;transition:all 0.2s ease;">';
-        $buttons_html .= esc_html__('Add credit card fee', 'wcpos-ccf');
-        $buttons_html .= '</button>';
-
-        // Remove fee button
-        $remove_display = !$has_fee ? 'display:none;' : '';
-        $remove_disabled = !$has_fee ? ' disabled' : '';
-        $buttons_html .= '<button type="button" class="button wcpos-remove-cc-fee-btn"' . $remove_disabled . ' style="' . $remove_display . 'background:#dc3232;color:#fff;border:none;padding:10px 20px;font-size:14px;font-weight:500;line-height:1.2;border-radius:4px;cursor:pointer;transition:all 0.2s ease;margin-left:10px;">';
-        $buttons_html .= esc_html__('Remove credit card fee', 'wcpos-ccf');
-        $buttons_html .= '</button>';
-
-        // Status badge
-        if ($has_fee) {
-            $buttons_html .= '<span class="wcpos-fee-status" style="display:inline-block;margin-left:10px;padding:8px 12px;background:#d4edda;color:#155724;border-radius:4px;font-weight:600;font-size:13px;border:1px solid #c3e6cb;">';
-            $buttons_html .= sprintf(esc_html__('%d%% fee applied', 'wcpos-ccf'), FEE_PERCENTAGE);
-            $buttons_html .= '</span>';
-        }
-
-        $buttons_html .= '</div>';
-
-        // Append buttons to the description
-        return $description . $buttons_html;
+        return $description . '<span class="wcpos-ccf-status">' .
+            esc_html(sprintf(__('%1$s %2$s%% applied', 'wcpos-ccf'), $rule['name'], $rule['percent'])) . '</span>';
     }
 
     /**
@@ -140,11 +289,14 @@ class Manager
             // Generate a custom security token based on session
             $security_token = $this->generate_security_token();
 
+            $rule = $this->get_card_rule();
+            $order = wc_get_order(absint(get_query_var('order-pay')));
             wp_localize_script('wcpos-credit-card-fee', 'wcpos_ccf', array(
                 'ajax_url' => admin_url('admin-ajax.php'),
                 'nonce' => wp_create_nonce('wcpos_ccf_nonce'), // Keep for backward compatibility
                 'security_token' => $security_token,
-                'fee_percentage' => FEE_PERCENTAGE
+                'card_gateways' => $rule['percent'] > 0 ? $rule['gateways'] : array(),
+                'card_fee_on_order' => $order && (bool) $this->find_fee($order, 'card')
             ));
         }
     }
@@ -240,42 +392,28 @@ class Manager
             wp_send_json_error(array('message' => 'Order not found.'));
             return;
         }
-
-        // Calculate fee amount (3% of order total including tax)
-        $total = $order->get_total();
-        $fee_amount = $total * (FEE_PERCENTAGE / 100);
-
-        if ($fee_amount <= 0) {
-            wp_send_json_error(array('message' => 'Invalid fee amount.'));
+        $order_key = wc_clean(wp_unslash($_POST['order_key'] ?? ''));
+        if (!is_string($order_key) || $order_key === '' || !hash_equals($order->get_order_key(), $order_key)) {
+            wp_send_json_error(array('message' => 'Order not found.'));
+            return;
+        }
+        if (!$order->needs_payment()) {
+            wp_send_json_error(array('message' => __('This order no longer needs payment.', 'wcpos-ccf')));
             return;
         }
 
-        // Remove any existing credit card fees
-        foreach ($order->get_fees() as $fee_id => $fee) {
-            if (strpos($fee->get_name(), 'Credit Card Fee') !== false) {
-                $order->remove_item($fee_id);
-            }
+        $rule = $this->get_card_rule();
+        $payment_method = wc_clean(wp_unslash($_POST['payment_method'] ?? ''));
+        if ($rule['percent'] <= 0 || !in_array($payment_method, $rule['gateways'], true)) {
+            wp_send_json_error(array('message' => __('Card fee is not enabled for this payment method.', 'wcpos-ccf')));
+            return;
         }
-
-        // Add the new fee
-        $fee = new \WC_Order_Item_Fee();
-        $fee->set_name(sprintf(__('Credit Card Fee (%d%%)', 'wcpos-ccf'), FEE_PERCENTAGE));
-        $fee->set_amount($fee_amount);
-        $fee->set_tax_class('');
-        $fee->set_tax_status('none');
-        $fee->set_total($fee_amount);
-
-        // Add fee to order
-        $order->add_item($fee);
+        $this->upsert_fee($order, $rule);
         $order->calculate_totals();
         $order->save();
 
-        // Store in session for reference
-        \WC()->session->set('wcpos_add_credit_card_fee', true);
-        \WC()->session->set('wcpos_fee_order_' . $order_id, true);
-
         wp_send_json_success(array(
-            'message' => sprintf(__('%d%% credit card fee added', 'wcpos-ccf'), FEE_PERCENTAGE),
+            'message' => __('Card fee applied', 'wcpos-ccf'),
             'reload' => true // Tell JS to reload the page
         ));
     }
@@ -312,98 +450,33 @@ class Manager
             wp_send_json_error(array('message' => 'Order not found.'));
             return;
         }
-
-        // Remove any existing credit card fees
-        $removed = false;
-        foreach ($order->get_fees() as $fee_id => $fee) {
-            if (strpos($fee->get_name(), 'Credit Card Fee') !== false) {
-                $order->remove_item($fee_id);
-                $removed = true;
-            }
+        $order_key = wc_clean(wp_unslash($_POST['order_key'] ?? ''));
+        if (!is_string($order_key) || $order_key === '' || !hash_equals($order->get_order_key(), $order_key)) {
+            wp_send_json_error(array('message' => 'Order not found.'));
+            return;
         }
+        if (!$order->needs_payment()) {
+            wp_send_json_error(array('message' => __('This order no longer needs payment.', 'wcpos-ccf')));
+            return;
+        }
+
+        $payment_method = wc_clean(wp_unslash($_POST['payment_method'] ?? ''));
+        $rule = $this->get_card_rule();
+        if ($rule['percent'] > 0 && in_array($payment_method, $rule['gateways'], true)) {
+            wp_send_json_error(array('message' => __('Card fee is required for this payment method.', 'wcpos-ccf')));
+            return;
+        }
+        $removed = $this->remove_fee($order, 'card');
 
         if ($removed) {
             $order->calculate_totals();
             $order->save();
         }
 
-        // Clear session flags
-        \WC()->session->set('wcpos_add_credit_card_fee', false);
-        \WC()->session->set('wcpos_fee_order_' . $order_id, false);
-
         wp_send_json_success(array(
             'message' => __('Credit card fee removed', 'wcpos-ccf'),
             'reload' => true // Tell JS to reload the page
         ));
-    }
-
-    /**
-     * Handle fee display for order-pay page
-     */
-    public function add_fee_to_order_pay()
-    {
-        if (!$this->is_pos_order_pay_page()) {
-            return;
-        }
-
-        $order_id = absint(get_query_var('order-pay'));
-        if (!$order_id) {
-            return;
-        }
-
-        $order = wc_get_order($order_id);
-        if (!$order) {
-            return;
-        }
-
-        // Check if order already has the fee
-        $has_fee = false;
-        foreach ($order->get_fees() as $fee) {
-            if (strpos($fee->get_name(), 'Credit Card Fee') !== false) {
-                $has_fee = true;
-                break;
-            }
-        }
-
-        // Update button visibility based on existing fee
-        if ($has_fee) {
-            \WC()->session->set('wcpos_add_credit_card_fee', true);
-            \WC()->session->set('wcpos_fee_order_' . $order_id, true);
-        }
-    }
-
-    /**
-     * Add credit card fee to cart
-     */
-    public function add_credit_card_fee($cart)
-    {
-        if (is_admin() && ! defined('DOING_AJAX')) {
-            return;
-        }
-
-        // Check if fee should be added
-        $should_add_fee = \WC()->session->get('wcpos_add_credit_card_fee');
-
-        if (! $should_add_fee) {
-            return;
-        }
-
-        // Calculate fee amount (3% of subtotal)
-        $subtotal = $cart->get_subtotal();
-        $fee_amount = $subtotal * (FEE_PERCENTAGE / 100);
-
-        // Don't add fee if amount is zero
-        if ($fee_amount <= 0) {
-            return;
-        }
-
-        // Add the fee with a unique key to ensure it's properly tracked
-        $cart->add_fee(
-            sprintf(__('Credit Card Fee (%d%%)', 'wcpos-ccf'), FEE_PERCENTAGE),
-            $fee_amount,
-            true, // Taxable
-            'standard' // Tax class
-        );
     }
 
 }

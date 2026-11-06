@@ -7,8 +7,10 @@ jQuery(document).ready(function($) {
     }
     
     // Cache elements
-    var $body = $('body');
     var $checkoutForm = $('form.checkout');
+    var inFlight = false;
+    // WordPress localization converts scalar booleans to '1' or ''.
+    wcpos_ccf.card_fee_on_order = Boolean(wcpos_ccf.card_fee_on_order);
     
     // Restore selected payment method after reload
     // Use a slight delay to ensure WooCommerce payment scripts have initialized
@@ -36,235 +38,56 @@ jQuery(document).ready(function($) {
                 $savedRadio.trigger('change');
             }
             sessionStorage.removeItem('wcpos_selected_payment');
+            syncCardFee();
         }, 150);
     }
     
-    /**
-     * Force checkout refresh
-     */
-    function forceCheckoutRefresh() {
-        // Try multiple methods to ensure checkout updates
-        
-        // Method 1: Standard WooCommerce checkout update
-        $body.trigger('update_checkout');
-        
-        // Method 2: If checkout params available, use direct AJAX update
-        if (typeof wc_checkout_params !== 'undefined' && wc_checkout_params.ajax_url) {
-            setTimeout(function() {
-                $.ajax({
-                    type: 'POST',
-                    url: wc_checkout_params.ajax_url,
-                    data: {
-                        'action': 'woocommerce_update_order_review',
-                        'security': wc_checkout_params.update_order_review_nonce || '',
-                        'payment_method': $('input[name="payment_method"]:checked').val() || ''
-                    },
-                    success: function(response) {
-                        if (response && response.fragments) {
-                            $.each(response.fragments, function(key, value) {
-                                $(key).replaceWith(value);
-                            });
-                            $body.trigger('updated_checkout');
-                        }
-                    }
-                });
-            }, 100);
+    function syncCardFee() {
+        var payment = $('input[name="payment_method"]:checked').val() || '';
+        var wanted = wcpos_ccf.card_gateways.indexOf(payment) !== -1;
+        if (inFlight || wanted === wcpos_ccf.card_fee_on_order) {
+            return;
         }
-        
-        // Method 3: For custom checkout pages, trigger a form change
-        setTimeout(function() {
-            $checkoutForm.trigger('change');
-        }, 200);
+        var pathMatch = window.location.pathname.match(/order-pay\/(\d+)/);
+        inFlight = true;
+        $('#place_order').prop('disabled', true);
+        $.ajax({
+            url: wcpos_ccf.ajax_url,
+            type: 'POST',
+            data: {
+                action: wanted ? 'wcpos_add_credit_card_fee' : 'wcpos_remove_credit_card_fee',
+                security_token: wcpos_ccf.security_token,
+                order_id: pathMatch ? pathMatch[1] : '',
+                order_key: new URLSearchParams(window.location.search).get('key') || '',
+                payment_method: payment
+            },
+            success: function(response) {
+                if (response.success) {
+                    var selectedPayment = $('input[name="payment_method"]:checked').val();
+                    if (selectedPayment) {
+                        sessionStorage.setItem('wcpos_selected_payment', selectedPayment);
+                    }
+                    window.location.reload();
+                } else {
+                    inFlight = false;
+                    $('#place_order').prop('disabled', false);
+                    showNotice(response.data && response.data.message || 'Fee could not be updated.', 'error');
+                }
+            },
+            error: function() {
+                inFlight = false;
+                $('#place_order').prop('disabled', false);
+                showNotice('Error updating fee. Please refresh the page and try again.', 'error');
+            }
+        });
     }
-    
-    /**
-     * Handle add fee button click
-     */
-    $body.on('click', '.wcpos-add-cc-fee-btn', function(e) {
-        e.preventDefault();
-        
-        var $button = $(this);
-        var $removeButton = $('.wcpos-remove-cc-fee-btn');
-        var $status = $('.wcpos-fee-status');
-        
-        // Get order ID from URL or form
-        var orderId = '';
-        var urlParams = new URLSearchParams(window.location.search);
-        if (urlParams.has('pay_for_order') && urlParams.has('key')) {
-            // Extract order ID from the URL path
-            var pathMatch = window.location.pathname.match(/order-pay\/(\d+)/);
-            if (pathMatch) {
-                orderId = pathMatch[1];
-            }
-        }
-        
-        // Disable button and show loading
-        $button.prop('disabled', true).text('Adding fee...');
-        
-        // Make AJAX request
-        $.ajax({
-            url: wcpos_ccf.ajax_url,
-            type: 'POST',
-            data: {
-                action: 'wcpos_add_credit_card_fee',
-                nonce: wcpos_ccf.nonce, // Keep for backward compatibility
-                security_token: wcpos_ccf.security_token,
-                order_id: orderId
-            },
-            success: function(response) {
-                if (response.success) {
-                    // If reload flag is set, reload the page
-                    if (response.data && response.data.reload) {
-                        // Update button to show reloading state
-                        $button.text('Reloading page...').css('opacity', '0.7');
-                        
-                        // Store selected payment method before reload
-                        var selectedPayment = $('input[name="payment_method"]:checked').val();
-                        if (selectedPayment) {
-                            sessionStorage.setItem('wcpos_selected_payment', selectedPayment);
-                        }
-                        
-                        // Reload immediately
-                        setTimeout(function() {
-                            window.location.reload();
-                        }, 500);
-                    } else {
-                        // Otherwise update UI without reload
-                        $button.hide();
-                        $removeButton.show();
-                        
-                        if ($status.length) {
-                            $status.html(wcpos_ccf.fee_percentage + '% fee applied');
-                        }
-                        
-                        if (response.data && response.data.message) {
-                            showNotice(response.data.message, 'success');
-                        }
-                        
-                        forceCheckoutRefresh();
-                        
-                        // Re-enable button
-                        $button.prop('disabled', false).text('Add credit card fee');
-                    }
-                } else {
-                    // Handle error response
-                    var errorMsg = 'Fee could not be added.';
-                    if (response.data && response.data.message) {
-                        errorMsg = response.data.message;
-                    }
-                    showNotice(errorMsg, 'error');
-                    
-                    // Re-enable button on error
-                    $button.prop('disabled', false).text('Add credit card fee');
-                }
-            },
-            error: function(xhr) {
-                var message = 'Error adding fee. Please try again.';
-                if (xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
-                    message = xhr.responseJSON.data.message;
-                }
-                showNotice(message, 'error');
-                
-                // Re-enable button on error
-                $button.prop('disabled', false).text('Add credit card fee');
-            }
-        });
-    });
-    
-    /**
-     * Handle remove fee button click
-     */
-    $body.on('click', '.wcpos-remove-cc-fee-btn', function(e) {
-        e.preventDefault();
-        
-        var $button = $(this);
-        var $addButton = $('.wcpos-add-cc-fee-btn');
-        var $status = $('.wcpos-fee-status');
-        
-        // Get order ID from URL or form
-        var orderId = '';
-        var urlParams = new URLSearchParams(window.location.search);
-        if (urlParams.has('pay_for_order') && urlParams.has('key')) {
-            // Extract order ID from the URL path
-            var pathMatch = window.location.pathname.match(/order-pay\/(\d+)/);
-            if (pathMatch) {
-                orderId = pathMatch[1];
-            }
-        }
-        
-        // Disable button and show loading
-        $button.prop('disabled', true).text('Removing fee...');
-        
-        // Make AJAX request
-        $.ajax({
-            url: wcpos_ccf.ajax_url,
-            type: 'POST',
-            data: {
-                action: 'wcpos_remove_credit_card_fee',
-                nonce: wcpos_ccf.nonce, // Keep for backward compatibility
-                security_token: wcpos_ccf.security_token,
-                order_id: orderId
-            },
-            success: function(response) {
-                if (response.success) {
-                    // If reload flag is set, reload the page
-                    if (response.data && response.data.reload) {
-                        // Update button to show reloading state
-                        $button.text('Reloading page...').css('opacity', '0.7');
-                        
-                        // Store selected payment method before reload
-                        var selectedPayment = $('input[name="payment_method"]:checked').val();
-                        if (selectedPayment) {
-                            sessionStorage.setItem('wcpos_selected_payment', selectedPayment);
-                        }
-                        
-                        // Reload immediately
-                        setTimeout(function() {
-                            window.location.reload();
-                        }, 500);
-                    } else {
-                        // Otherwise update UI without reload
-                        $button.hide();
-                        $addButton.show();
-                        
-                        if ($status.length) {
-                            $status.html('');
-                        }
-                        
-                        if (response.data && response.data.message) {
-                            showNotice(response.data.message, 'success');
-                        }
-                        
-                        forceCheckoutRefresh();
-                        
-                        // Re-enable button
-                        $button.prop('disabled', false).text('Remove credit card fee');
-                    }
-                } else {
-                    // Handle error response
-                    var errorMsg = 'Fee could not be removed.';
-                    if (response.data && response.data.message) {
-                        errorMsg = response.data.message;
-                    }
-                    showNotice(errorMsg, 'error');
-                    
-                    // Re-enable button on error
-                    $button.prop('disabled', false).text('Remove credit card fee');
-                }
-            },
-            error: function(xhr) {
-                var message = 'Error removing fee. Please try again.';
-                if (xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
-                    message = xhr.responseJSON.data.message;
-                }
-                showNotice(message, 'error');
-                
-                // Re-enable button on error
-                $button.prop('disabled', false).text('Remove credit card fee');
-            }
-        });
-    });
-    
+
+    // The pay page form is #order_review, so delegate from body rather than form.checkout.
+    $(document.body).on('change', 'input[name="payment_method"]', syncCardFee);
+    if (!savedPayment) {
+        syncCardFee();
+    }
+
     /**
      * Show notice message
      */
@@ -310,25 +133,4 @@ jQuery(document).ready(function($) {
         }, 5000);
     }
     
-    /**
-     * Re-initialize buttons after checkout update
-     */
-    $body.on('updated_checkout', function() {
-        // The buttons should persist through checkout updates
-        // This is here in case we need to re-initialize anything
-    });
-    
-    /**
-     * Handle payment method change
-     */
-    $body.on('change', 'input[name="payment_method"]', function() {
-        // Optional: You could automatically remove the fee when switching away from pos_cash
-        // Uncomment the following if desired:
-        /*
-        if ($(this).val() !== 'pos_cash' && $('.wcpos-remove-cc-fee-btn').is(':visible')) {
-            $('.wcpos-remove-cc-fee-btn').trigger('click');
-        }
-        */
-    });
 });
-
