@@ -59,7 +59,7 @@ class Manager
             return $keys;
         });
         add_action('woocommerce_rest_insert_shop_order_object', array($this, 'apply_always_fee'), 10, 3);
-        add_action('woocommerce_order_after_calculate_totals', array($this, 'recompute_always_fee'), 10, 2);
+        add_action('woocommerce_order_after_calculate_totals', array($this, 'recompute_fees'), 10, 2);
         add_action('woocommerce_before_pay_action', array($this, 'reconcile_card_fee'));
     }
 
@@ -202,22 +202,25 @@ class Manager
     }
 
     /**
-     * Keep an existing always fee in step with the line items on every totals
-     * recalculation: REST updates, pay-page coupons, admin edits.
+     * Keep existing fee lines in step with the line items on every totals
+     * recalculation: REST updates, pay-page coupons, admin edits. Whether a
+     * line exists is decided elsewhere (create, the pay-page gateway, the cashier).
      */
-    public function recompute_always_fee($and_taxes, $order)
+    public function recompute_fees($and_taxes, $order)
     {
         static $busy = false;
         if ($busy || !$order instanceof \WC_Order || $order->get_created_via() !== 'woocommerce-pos') {
             return;
         }
-        $rule = $this->get_always_rule();
-        if ($rule['percent'] <= 0 || !$this->find_fee($order, 'always')) {
-            return;
-        }
         $busy = true;
         try {
-            if ($this->upsert_fee($order, $rule)) {
+            $changed = false;
+            foreach (array($this->get_always_rule(), $this->get_card_rule()) as $rule) {
+                if ($rule['percent'] > 0 && $this->find_fee($order, $rule['id']) && $this->upsert_fee($order, $rule)) {
+                    $changed = true;
+                }
+            }
+            if ($changed) {
                 $order->calculate_totals($and_taxes);
             }
         } finally {
